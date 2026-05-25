@@ -1,0 +1,10 @@
+---
+# site.yml — master playbook
+# Runs all roles against all hosts.
+# Import specific playbooks below for more granular control.
+
+- name: Configure all hosts
+  hosts: all
+  gather_facts: true
+  roles:
+    - common
