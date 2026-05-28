@@ -1,8 +1,0 @@
----
-# tasks/main.yml — entry point for the common role
-# Add task files with `import_tasks` or `include_tasks` as needed.
-
-- name: Ensure common packages are installed
-  ansible.builtin.package:
-    name: "{{ common_packages }}"
-    state: present

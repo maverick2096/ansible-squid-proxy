@@ -1,8 +1,0 @@
----
-# defaults/main.yml — lowest-priority variables for the common role
-# These are meant to be overridden by inventory vars or extra vars.
-
-common_packages:
-  - curl
-  - vim
-  - git

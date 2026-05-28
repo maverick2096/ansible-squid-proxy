@@ -1,0 +1,9 @@
+---
+# This role intentionally has no main entry. Import specific task files
+# from playbooks:
+#   - tasks/deregister.yml
+#   - tasks/wait_drained.yml
+#   - tasks/wait_healthy.yml
+#   - tasks/register.yml
+- ansible.builtin.debug:
+    msg: "lifecycle role: import individual task files, not main.yml"

@@ -1,8 +1,0 @@
----
-# Variables applied to every host in inventory.
-# Override per-group in group_vars/<groupname>.yml
-# Override per-host in host_vars/<hostname>.yml
-
-ansible_user: ubuntu
-ansible_become: true
-ansible_become_method: sudo

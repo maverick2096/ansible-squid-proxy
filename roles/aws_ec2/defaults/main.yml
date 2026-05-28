@@ -1,0 +1,9 @@
+---
+# Whether to attach instances to the NLB target group at launch. The
+# rolling-replacement playbook controls registration explicitly and
+# sets this false to gate behind health checks.
+aws_ec2_register_with_target_group: true
+
+# If a named instance already exists (matched by Name tag + state=running),
+# skip launching a replacement. Set false to force a fresh launch.
+aws_ec2_skip_if_exists: true

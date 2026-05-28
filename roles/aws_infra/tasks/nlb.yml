@@ -1,0 +1,53 @@
+---
+# Network Load Balancer + target group + listener.
+# NLB chosen over ALB because Squid speaks plain TCP (CONNECT method
+# tunnels HTTPS) and we want client-source-IP preservation.
+
+- name: Create target group
+  community.aws.elb_target_group:
+    name: "{{ nlb_target_group_name }}"
+    region: "{{ aws_region }}"
+    vpc_id: "{{ vpc_id }}"
+    protocol: "{{ nlb_target_group_protocol }}"
+    port: "{{ nlb_target_group_port }}"
+    target_type: instance
+    health_check_protocol: "{{ nlb_health_check_protocol }}"
+    health_check_port: "{{ nlb_health_check_port }}"
+    health_check_interval: "{{ nlb_health_check_interval_sec }}"
+    healthy_threshold_count: "{{ nlb_health_check_healthy_threshold }}"
+    unhealthy_threshold_count: "{{ nlb_health_check_unhealthy_threshold }}"
+    deregistration_delay_timeout: "{{ nlb_deregistration_delay_sec }}"
+    state: present
+    tags: "{{ common_tags | combine({'Name': nlb_target_group_name}) }}"
+  register: target_group
+
+- name: Create network load balancer
+  community.aws.elb_network_lb:
+    name: "{{ nlb_name }}"
+    region: "{{ aws_region }}"
+    subnets: "{{ private_subnets | map(attribute='id') | list }}"
+    scheme: "{{ nlb_scheme }}"
+    cross_zone_load_balancing: "{{ nlb_cross_zone_load_balancing }}"
+    state: present
+    tags: "{{ common_tags | combine({'Name': nlb_name}) }}"
+    listeners:
+      - Protocol: "{{ nlb_listener_protocol }}"
+        Port: "{{ nlb_listener_port }}"
+        DefaultActions:
+          - Type: forward
+            TargetGroupName: "{{ nlb_target_group_name }}"
+  register: nlb
+
+- name: Stash NLB and target group facts for downstream plays
+  ansible.builtin.set_fact:
+    nlb_arn: "{{ nlb.load_balancer_arn }}"
+    nlb_dns_name: "{{ nlb.dns_name }}"
+    nlb_target_group_arn: "{{ target_group.target_group_arn }}"
+
+- name: Print proxy endpoint for client configuration
+  ansible.builtin.debug:
+    msg: |
+      Squid proxy reachable at:
+        host: {{ nlb_dns_name }}
+        port: {{ squid_listen_port }}
+      Configure clients with HTTP(S)_PROXY=http://{{ nlb_dns_name }}:{{ squid_listen_port }}

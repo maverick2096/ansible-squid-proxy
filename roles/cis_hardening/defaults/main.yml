@@ -1,0 +1,17 @@
+---
+# Thin wrapper around ansible-lockdown.amzn2023_cis. We translate our
+# project-friendly variable names into the names that role expects.
+# Override these in inventory/group_vars/tag_Role_squid_proxy.yml.
+
+cis_level_1_server: true
+cis_level_2_server: false
+
+cis_section_1: true
+cis_section_2: true
+cis_section_3: true
+cis_section_4: true
+cis_section_5: true
+cis_section_6: true
+
+# Allowed inbound ports that CIS firewall config must NOT block.
+cis_firewall_allow_ports: []

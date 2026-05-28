@@ -1,8 +1,49 @@
 ---
-# Variables applied to every host in inventory.
-# Override per-group in group_vars/<groupname>.yml
-# Override per-host in host_vars/<hostname>.yml
+# =============================================================================
+# Global variables — apply to every host in inventory.
+# Override per-group in group_vars/<groupname>.yml or per-host in host_vars/.
+# Secrets belong in group_vars/vault.yml (ansible-vault encrypted).
+# =============================================================================
 
-ansible_user: ubuntu
+# ---------- AWS region & networking (pre-existing — supplied by user) --------
+aws_region: us-east-1
+
+# VPC and subnets are pre-existing. Fill these in for your environment.
+vpc_id: "vpc-REPLACE_ME"
+
+# One private subnet per AZ. NLB needs >=2 AZs for HA.
+# Order matters: the Nth EC2 instance (squid_instances[N]) is launched into
+# the matching subnet by AZ lookup below.
+private_subnets:
+  - id: "subnet-REPLACE_ME_AZ_A"
+    az: "us-east-1a"
+  - id: "subnet-REPLACE_ME_AZ_B"
+    az: "us-east-1b"
+
+# CIDR blocks of clients allowed to *reach* the NLB on the proxy port.
+# This is enforced at the NLB security group AND in squid.conf ACLs.
+allowed_client_cidrs:
+  - "10.0.0.0/8"
+
+# Admin CIDR blocks allowed to SSH directly to proxy instances (bastion, etc.).
+# Set to [] if you connect exclusively via SSM Session Manager.
+admin_ssh_cidrs: []
+
+# ---------- Project identity / tagging ---------------------------------------
+project_name: squid-proxy
+environment: prod
+owner: platform-team
+
+common_tags:
+  Project: "{{ project_name }}"
+  Environment: "{{ environment }}"
+  Owner: "{{ owner }}"
+  ManagedBy: ansible
+
+# ---------- Connection -------------------------------------------------------
+# Default to SSH with key auth. Swap to community.aws.aws_ssm if you prefer
+# keyless via SSM Session Manager (set ansible_connection: aws_ssm).
+ansible_user: ec2-user
 ansible_become: true
 ansible_become_method: sudo
+ansible_python_interpreter: /usr/bin/python3

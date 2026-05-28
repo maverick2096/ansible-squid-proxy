@@ -1,0 +1,148 @@
+---
+# =============================================================================
+# Variables for hosts tagged Role=squid-proxy (matches keyed_group in
+# inventory/aws_ec2.yml). All squid + NLB + EC2 sizing knobs live here.
+# =============================================================================
+
+# ---------- EC2 instance sizing ----------------------------------------------
+ec2_instance_type: t3.medium
+ec2_root_volume_size_gb: 30
+ec2_root_volume_type: gp3
+ec2_root_volume_encrypted: true
+
+# Amazon Linux 2023 AMI lookup — owner 137112412989 is Amazon's official.
+# Filter for x86_64 minimal/standard; arm64 use ami_filter_arch=arm64.
+ec2_ami_owner: "137112412989"
+ec2_ami_filter_name: "al2023-ami-2023.*-x86_64"
+ec2_ami_filter_arch: "x86_64"
+
+# SSH key pair name (must already exist in the AWS region). Leave empty
+# if you only use SSM Session Manager.
+ec2_key_name: ""
+
+# IAM instance profile providing SSM + CloudWatch perms. Must pre-exist or
+# be created out-of-band; we don't manage IAM in this playbook by design.
+ec2_iam_instance_profile: "{{ project_name }}-instance-profile"
+
+# Topology — one entry per proxy instance. The N-th entry maps to the
+# N-th subnet in private_subnets by AZ matching.
+squid_instances:
+  - name: "{{ project_name }}-01"
+    az: "us-east-1a"
+  - name: "{{ project_name }}-02"
+    az: "us-east-1b"
+
+# ---------- Squid configuration ----------------------------------------------
+squid_package: squid
+squid_service: squid
+squid_user: squid
+squid_group: squid
+
+squid_listen_port: 3128
+squid_visible_hostname: "{{ inventory_hostname }}"
+
+# Disk cache. Set squid_cache_dir_size_mb=0 to disable on-disk caching.
+squid_cache_dir: /var/spool/squid
+squid_cache_dir_size_mb: 1024
+squid_cache_mem_mb: 256
+squid_max_object_size_mb: 100
+
+squid_log_dir: /var/log/squid
+squid_access_log: "{{ squid_log_dir }}/access.log"
+squid_cache_log: "{{ squid_log_dir }}/cache.log"
+squid_log_rotate_days: 14
+
+# ACL inputs — keep client CIDRs aligned with allowed_client_cidrs above.
+squid_allowed_client_cidrs: "{{ allowed_client_cidrs }}"
+
+# Destination domain allowlist. Leading dot matches subdomains.
+# Set to [] to allow ALL destinations (not recommended).
+squid_allowed_dst_domains:
+  - ".amazonaws.com"
+  - ".github.com"
+  - ".githubusercontent.com"
+  - ".docker.io"
+  - ".docker.com"
+  - ".pypi.org"
+  - ".pythonhosted.org"
+
+# Standard safe-ports / SSL-ports lists from squid's default config.
+squid_safe_ports:
+  - "80"        # http
+  - "21"        # ftp
+  - "443"       # https
+  - "70"        # gopher
+  - "210"       # wais
+  - "1025-65535" # unregistered ports
+  - "280"       # http-mgmt
+  - "488"       # gss-http
+  - "591"       # filemaker
+  - "777"       # multiling http
+
+squid_ssl_ports:
+  - "443"
+
+# Optional: forwarded_for / via headers. Set to "delete" to strip for privacy.
+squid_forwarded_for: "delete"
+squid_via: "off"
+
+# ---------- Network Load Balancer --------------------------------------------
+nlb_name: "{{ project_name }}-nlb"
+nlb_scheme: internal             # internal | internet-facing
+nlb_type: network
+nlb_cross_zone_load_balancing: true
+
+nlb_target_group_name: "{{ project_name }}-tg"
+nlb_target_group_protocol: TCP
+nlb_target_group_port: "{{ squid_listen_port }}"
+
+nlb_health_check_protocol: TCP
+nlb_health_check_port: "{{ squid_listen_port }}"
+nlb_health_check_interval_sec: 30
+nlb_health_check_healthy_threshold: 3
+nlb_health_check_unhealthy_threshold: 3
+
+# Drain timeout: how long the NLB lets in-flight connections finish after
+# a target is deregistered. Keep this >= longest expected proxy session.
+nlb_deregistration_delay_sec: 60
+
+nlb_listener_port: "{{ squid_listen_port }}"
+nlb_listener_protocol: TCP
+
+# ---------- Security group names --------------------------------------------
+sg_nlb_name: "{{ project_name }}-nlb-sg"
+sg_instances_name: "{{ project_name }}-instances-sg"
+
+# ---------- Lifecycle / rolling-replacement tunables -------------------------
+# Per-instance: how long to wait after deregister before terminating.
+rolling_drain_wait_sec: "{{ nlb_deregistration_delay_sec | int + 30 }}"
+
+# How long to wait for a freshly-launched instance to report healthy in
+# the NLB target group before failing the play.
+rolling_health_wait_sec: 600
+rolling_health_check_interval_sec: 15
+
+# Patch (in-place yum update) playbook tunables.
+patch_reboot_required_check: true
+patch_reboot_timeout_sec: 600
+patch_serial_count: 1     # Number of instances to patch in parallel. 1 = strict rolling.
+
+# ---------- CIS hardening ----------------------------------------------------
+# These get fed into the ansible-lockdown.amzn2023_cis role.
+# See the role README for the full list of toggles.
+cis_level_1_server: true
+cis_level_2_server: false
+cis_section_1: true        # Initial Setup
+cis_section_2: true        # Services
+cis_section_3: true        # Network Configuration
+cis_section_4: true        # Logging and Auditing
+cis_section_5: true        # Access, Auth, Authorization
+cis_section_6: true        # System Maintenance
+
+# Squid exceptions — these override CIS defaults that would otherwise
+# break the proxy (e.g. firewall blocking 3128).
+cis_firewall_allow_ports:
+  - "{{ squid_listen_port }}/tcp"
+
+# Don't disable IPv4 forwarding — we don't need it on a proxy host, so keep CIS.
+# Don't disable rsyslog — squid logs flow through journald + access.log.

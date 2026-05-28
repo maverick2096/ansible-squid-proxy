@@ -1,0 +1,23 @@
+---
+# Inputs:
+#   lifecycle_target_instance_id
+# Polls the target group until this target reports healthy.
+- name: "Wait for {{ lifecycle_target_instance_id }} to become healthy"
+  community.aws.elb_target_info:
+    target_group_arn: "{{ nlb_target_group_arn }}"
+    region: "{{ aws_region }}"
+  register: tg_state
+  vars:
+    matching: >-
+      {{
+        (tg_state.instance_target_groups
+         | default([{'target_health_descriptions': []}]))[0]
+        .target_health_descriptions
+        | selectattr('target.id', 'equalto', lifecycle_target_instance_id)
+        | list
+      }}
+  until:
+    - matching | length > 0
+    - matching[0].target_health.state == "healthy"
+  retries: "{{ (rolling_health_wait_sec | int // rolling_health_check_interval_sec | int) | int }}"
+  delay: "{{ rolling_health_check_interval_sec }}"

@@ -1,0 +1,66 @@
+---
+# Two security groups:
+#   1) NLB SG — ingress: proxy port from allowed_client_cidrs
+#   2) Instance SG — ingress: proxy port from NLB SG only, SSH from admin CIDRs
+
+- name: Create NLB security group
+  amazon.aws.ec2_security_group:
+    name: "{{ sg_nlb_name }}"
+    description: "Squid proxy NLB ingress"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    tags: "{{ common_tags | combine({'Name': sg_nlb_name}) }}"
+    rules:
+      - proto: tcp
+        from_port: "{{ squid_listen_port }}"
+        to_port: "{{ squid_listen_port }}"
+        cidr_ip: "{{ allowed_client_cidrs }}"
+        rule_desc: "Squid proxy from allowed client CIDRs"
+    rules_egress:
+      - proto: -1
+        cidr_ip: "0.0.0.0/0"
+        rule_desc: "Allow all egress (NLB forwards to targets)"
+  register: nlb_sg
+
+- name: Create instance security group
+  amazon.aws.ec2_security_group:
+    name: "{{ sg_instances_name }}"
+    description: "Squid proxy EC2 instances"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    tags: "{{ common_tags | combine({'Name': sg_instances_name}) }}"
+    rules: "{{ instance_sg_ingress_rules }}"
+    rules_egress:
+      - proto: -1
+        cidr_ip: "0.0.0.0/0"
+        rule_desc: "Allow all egress — proxy must reach the internet"
+  vars:
+    # Proxy-port ingress is restricted to the NLB SG. SSH ingress is only
+    # added if admin_ssh_cidrs is non-empty.
+    instance_sg_ingress_rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': squid_listen_port,
+            'to_port': squid_listen_port,
+            'group_id': nlb_sg.group_id,
+            'rule_desc': 'Squid proxy from NLB only'
+          }
+        ]
+        + (
+          [{
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': admin_ssh_cidrs,
+            'rule_desc': 'SSH from admin CIDRs'
+          }] if (admin_ssh_cidrs | length) > 0 else []
+        )
+      }}
+  register: instance_sg
+
+- name: Stash SG ids as facts for downstream roles
+  ansible.builtin.set_fact:
+    nlb_sg_id: "{{ nlb_sg.group_id }}"
+    instance_sg_id: "{{ instance_sg.group_id }}"

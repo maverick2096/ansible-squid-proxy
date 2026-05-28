@@ -1,0 +1,215 @@
+---
+# replace.yml — immutable rolling replacement (one instance at a time).
+# For each host in the squid_proxy group, in serial:
+#   1. Deregister target from NLB target group (delegated to localhost)
+#   2. Wait for connection drain
+#   3. Terminate the OLD EC2 instance
+#   4. Launch a fresh instance from the latest AL2023 AMI in the same AZ,
+#      reusing the same Name tag
+#   5. Reset the host's ansible_host to the new private IP
+#   6. Run CIS hardening + squid roles AGAINST the new host
+#   7. Register the new instance and wait until healthy in NLB
+#
+# Usage:
+#   ansible-playbook playbooks/replace.yml
+#   ansible-playbook playbooks/replace.yml --limit squid-proxy-01
+
+# ----- Phase 1: discover target group ARN and broadcast it ------------------
+- name: Discover NLB target group
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tasks:
+    - name: Look up target group ARN
+      community.aws.elb_target_group_info:
+        names: ["{{ nlb_target_group_name }}"]
+        region: "{{ aws_region }}"
+      register: tg_lookup
+
+    - name: Look up instance security group id
+      amazon.aws.ec2_security_group_info:
+        region: "{{ aws_region }}"
+        filters:
+          group-name: "{{ sg_instances_name }}"
+          vpc-id: "{{ vpc_id }}"
+      register: sg_lookup
+
+    - name: Look up latest AL2023 AMI
+      amazon.aws.ec2_ami_info:
+        region: "{{ aws_region }}"
+        owners: "{{ ec2_ami_owner }}"
+        filters:
+          name: "{{ ec2_ami_filter_name }}"
+          architecture: "{{ ec2_ami_filter_arch }}"
+          state: available
+          virtualization-type: hvm
+          root-device-type: ebs
+      register: ami_info
+
+    - name: Broadcast facts to every squid proxy host
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: tag_Role_squid_proxy
+        nlb_target_group_arn: "{{ tg_lookup.target_groups[0].target_group_arn }}"
+        instance_sg_id: "{{ sg_lookup.security_groups[0].group_id }}"
+        selected_ami_id: >-
+          {{ (ami_info.images | sort(attribute='creation_date') | last).image_id }}
+      loop: "{{ groups['tag_Role_squid_proxy'] | default([]) }}"
+      changed_when: false
+
+# ----- Phase 2: rolling replace, one host at a time -------------------------
+- name: Rolling immutable replacement
+  hosts: tag_Role_squid_proxy
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tasks:
+
+    - name: Capture old instance facts
+      ansible.builtin.set_fact:
+        old_instance_id: "{{ ec2_instance_id }}"
+        old_az: "{{ ec2_availability_zone }}"
+
+    # ---- Phase 2a: drain ----
+    - name: Deregister old instance from NLB
+      community.aws.elb_target:
+        target_group_arn: "{{ nlb_target_group_arn }}"
+        target_id: "{{ old_instance_id }}"
+        target_port: "{{ squid_listen_port }}"
+        region: "{{ aws_region }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for connection drain
+      ansible.builtin.pause:
+        seconds: "{{ rolling_drain_wait_sec | int }}"
+      delegate_to: localhost
+      become: false
+
+    # ---- Phase 2b: destroy ----
+    - name: Terminate old instance
+      amazon.aws.ec2_instance:
+        instance_ids: ["{{ old_instance_id }}"]
+        region: "{{ aws_region }}"
+        state: absent
+        wait: true
+        wait_timeout: 300
+      delegate_to: localhost
+      become: false
+
+    # ---- Phase 2c: launch replacement ----
+    - name: Resolve subnet for AZ {{ old_az }}
+      ansible.builtin.set_fact:
+        target_subnet_id: >-
+          {{ (private_subnets
+              | selectattr('az', 'equalto', old_az)
+              | map(attribute='id')
+              | first) }}
+      delegate_to: localhost
+      become: false
+
+    - name: Launch replacement EC2 instance
+      amazon.aws.ec2_instance:
+        name: "{{ inventory_hostname }}"
+        region: "{{ aws_region }}"
+        image_id: "{{ selected_ami_id }}"
+        instance_type: "{{ ec2_instance_type }}"
+        key_name: "{{ ec2_key_name | default(omit, true) }}"
+        vpc_subnet_id: "{{ target_subnet_id }}"
+        security_groups: ["{{ instance_sg_id }}"]
+        iam_instance_profile: "{{ ec2_iam_instance_profile | default(omit, true) }}"
+        network:
+          assign_public_ip: false
+        volumes:
+          - device_name: /dev/xvda
+            ebs:
+              volume_size: "{{ ec2_root_volume_size_gb }}"
+              volume_type: "{{ ec2_root_volume_type }}"
+              encrypted: "{{ ec2_root_volume_encrypted }}"
+              delete_on_termination: true
+        metadata_options:
+          http_tokens: required
+          http_endpoint: enabled
+          http_put_response_hop_limit: 1
+        tags: >-
+          {{ common_tags | combine({
+            'Name': inventory_hostname,
+            'Role': 'squid-proxy',
+            'AZ': old_az
+          }) }}
+        state: running
+        wait: true
+        wait_timeout: 600
+      delegate_to: localhost
+      become: false
+      register: new_instance
+
+    # ---- Phase 2d: redirect connection to the new host ----
+    - name: Update connection address to the new instance
+      ansible.builtin.set_fact:
+        ansible_host: "{{ new_instance.instances[0].private_ip_address }}"
+        ec2_instance_id: "{{ new_instance.instances[0].instance_id }}"
+
+    - name: Wait for SSH to come up on the replacement
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        delay: 15
+        timeout: 300
+      delegate_to: localhost
+      become: false
+
+    - name: Reset Ansible connection to use new IP
+      ansible.builtin.meta: reset_connection
+
+    - name: Gather facts on the fresh instance
+      ansible.builtin.setup:
+
+    # ---- Phase 2e: configure the new host ----
+    - name: Apply CIS hardening to replacement
+      ansible.builtin.include_role:
+        name: cis_hardening
+
+    - name: Configure squid on replacement
+      ansible.builtin.include_role:
+        name: squid
+
+    # ---- Phase 2f: bring it back into rotation ----
+    - name: Register new instance with NLB
+      community.aws.elb_target:
+        target_group_arn: "{{ nlb_target_group_arn }}"
+        target_id: "{{ ec2_instance_id }}"
+        target_port: "{{ squid_listen_port }}"
+        region: "{{ aws_region }}"
+        state: present
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for healthy in NLB target group
+      community.aws.elb_target_info:
+        target_group_arn: "{{ nlb_target_group_arn }}"
+        region: "{{ aws_region }}"
+      register: tg_state
+      delegate_to: localhost
+      become: false
+      vars:
+        matching: >-
+          {{
+            (tg_state.instance_target_groups
+             | default([{'target_health_descriptions': []}]))[0]
+            .target_health_descriptions
+            | selectattr('target.id', 'equalto', ec2_instance_id)
+            | list
+          }}
+      until:
+        - matching | length > 0
+        - matching[0].target_health.state == "healthy"
+      retries: "{{ (rolling_health_wait_sec | int // rolling_health_check_interval_sec | int) | int }}"
+      delay: "{{ rolling_health_check_interval_sec }}"

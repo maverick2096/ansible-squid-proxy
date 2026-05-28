@@ -1,0 +1,118 @@
+---
+# patch.yml — in-place OS patching with `dnf update`. Rolls one instance
+# at a time (serial=patch_serial_count): deregister → patch → reboot if
+# required → re-register → wait healthy → next.
+#
+# Use this for routine security patches. For full OS version upgrades
+# (e.g. AL2023 minor bumps to a new AMI baseline) use replace.yml.
+#
+# Usage:  ansible-playbook playbooks/patch.yml
+
+- name: Discover NLB / target group for lifecycle ops
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tasks:
+    - name: Look up target group ARN
+      community.aws.elb_target_group_info:
+        names: ["{{ nlb_target_group_name }}"]
+        region: "{{ aws_region }}"
+      register: tg_lookup
+
+    - name: Stash target group ARN on all hosts
+      ansible.builtin.set_fact:
+        nlb_target_group_arn: "{{ tg_lookup.target_groups[0].target_group_arn }}"
+        cacheable: true
+
+    - name: Share ARN with every other host
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        nlb_target_group_arn: "{{ tg_lookup.target_groups[0].target_group_arn }}"
+      loop: "{{ groups['tag_Role_squid_proxy'] | default([]) }}"
+      changed_when: false
+
+- name: Rolling OS patch
+  hosts: tag_Role_squid_proxy
+  gather_facts: true
+  serial: "{{ patch_serial_count | default(1) }}"
+  any_errors_fatal: true
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tasks:
+
+    # ---------- Pull host out of the NLB pool --------------------------------
+    - name: Deregister from NLB
+      delegate_to: localhost
+      become: false
+      ansible.builtin.import_role:
+        name: lifecycle
+        tasks_from: deregister.yml
+      vars:
+        lifecycle_target_instance_id: "{{ ec2_instance_id }}"
+
+    - name: Wait for connection draining
+      delegate_to: localhost
+      become: false
+      ansible.builtin.import_role:
+        name: lifecycle
+        tasks_from: wait_drained.yml
+      vars:
+        lifecycle_target_instance_id: "{{ ec2_instance_id }}"
+
+    # ---------- Patch --------------------------------------------------------
+    - name: Apply all available OS updates
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest                # noqa: package-latest -- intentional for patching
+        update_cache: true
+      register: dnf_result
+
+    - name: Check if a reboot is required
+      ansible.builtin.command: needs-restarting -r
+      register: needs_restart
+      changed_when: false
+      failed_when: false
+      when: patch_reboot_required_check | bool
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ patch_reboot_timeout_sec }}"
+      when:
+        - patch_reboot_required_check | bool
+        - needs_restart.rc is defined
+        - needs_restart.rc == 1
+
+    - name: Ensure squid is back up
+      ansible.builtin.service:
+        name: "{{ squid_service }}"
+        state: started
+        enabled: true
+
+    - name: Verify squid is listening locally
+      ansible.builtin.wait_for:
+        port: "{{ squid_listen_port }}"
+        host: 127.0.0.1
+        timeout: 60
+
+    # ---------- Re-attach and confirm ---------------------------------------
+    - name: Re-register with NLB
+      delegate_to: localhost
+      become: false
+      ansible.builtin.import_role:
+        name: lifecycle
+        tasks_from: register.yml
+      vars:
+        lifecycle_target_instance_id: "{{ ec2_instance_id }}"
+
+    - name: Wait for healthy in target group
+      delegate_to: localhost
+      become: false
+      ansible.builtin.import_role:
+        name: lifecycle
+        tasks_from: wait_healthy.yml
+      vars:
+        lifecycle_target_instance_id: "{{ ec2_instance_id }}"

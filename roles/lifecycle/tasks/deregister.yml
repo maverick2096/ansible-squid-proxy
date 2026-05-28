@@ -1,0 +1,11 @@
+---
+# Inputs:
+#   lifecycle_target_instance_id  — EC2 instance id to deregister
+- name: "Deregister {{ lifecycle_target_instance_id }} from NLB target group"
+  community.aws.elb_target:
+    target_group_arn: "{{ nlb_target_group_arn }}"
+    target_id: "{{ lifecycle_target_instance_id }}"
+    target_port: "{{ squid_listen_port }}"
+    region: "{{ aws_region }}"
+    state: absent
+    deregister_unused: false

@@ -1,0 +1,6 @@
+---
+# All knobs come from inventory/group_vars/. This file exists only to
+# document role-internal defaults if you want to override them at the
+# role boundary.
+
+aws_infra_register_targets: false   # set true to attach instances at provision time

@@ -1,0 +1,22 @@
+---
+# configure.yml — apply CIS hardening + squid configuration to every
+# proxy instance in inventory. Pulled in by site.yml, also runnable
+# directly when you only want to push config changes.
+#
+# Usage:  ansible-playbook playbooks/configure.yml
+
+- name: Configure squid proxy hosts
+  hosts: tag_Role_squid_proxy
+  gather_facts: true
+  any_errors_fatal: false
+  serial: "{{ patch_serial_count | default(1) }}"
+  pre_tasks:
+    - name: Refresh package metadata
+      ansible.builtin.dnf:
+        update_cache: true
+      changed_when: false
+  roles:
+    - role: cis_hardening
+      tags: [cis, hardening]
+    - role: squid
+      tags: [squid]

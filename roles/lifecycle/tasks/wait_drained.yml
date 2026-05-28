@@ -1,0 +1,19 @@
+---
+# Inputs:
+#   lifecycle_target_instance_id
+# Behavior:
+#   Poll the target health until the target leaves the target group
+#   (state=draining → unused), or until rolling_drain_wait_sec elapses.
+- name: "Wait for {{ lifecycle_target_instance_id }} to finish draining"
+  community.aws.elb_target_info:
+    target_group_arn: "{{ nlb_target_group_arn }}"
+    region: "{{ aws_region }}"
+  register: tg_state
+  until: >-
+    tg_state.instance_target_groups | default([]) | length == 0
+    or (tg_state.instance_target_groups[0].target_health_descriptions
+        | selectattr('target.id', 'equalto', lifecycle_target_instance_id)
+        | list | length) == 0
+  retries: "{{ (rolling_drain_wait_sec | int // 10) | int }}"
+  delay: 10
+  failed_when: false

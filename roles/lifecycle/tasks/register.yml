@@ -1,0 +1,10 @@
+---
+# Inputs:
+#   lifecycle_target_instance_id
+- name: "Register {{ lifecycle_target_instance_id }} with NLB target group"
+  community.aws.elb_target:
+    target_group_arn: "{{ nlb_target_group_arn }}"
+    target_id: "{{ lifecycle_target_instance_id }}"
+    target_port: "{{ squid_listen_port }}"
+    region: "{{ aws_region }}"
+    state: present

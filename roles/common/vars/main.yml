@@ -1,3 +1,0 @@
----
-# vars/main.yml — higher-priority variables (not meant to be overridden)
-# Use defaults/main.yml for values you want users to be able to override.

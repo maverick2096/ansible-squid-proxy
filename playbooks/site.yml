@@ -1,10 +1,12 @@
 ---
-# site.yml — master playbook
-# Runs all roles against all hosts.
-# Import specific playbooks below for more granular control.
+# site.yml — end-to-end provision + configure of the squid proxy cluster.
+# Idempotent: safe to re-run; will create missing resources and update
+# config on existing instances.
+#
+# Usage:  ansible-playbook playbooks/site.yml
 
-- name: Configure all hosts
-  hosts: all
-  gather_facts: true
-  roles:
-    - common
+- name: Import provisioning play (AWS infra + EC2)
+  ansible.builtin.import_playbook: provision.yml
+
+- name: Import configuration play (CIS + squid)
+  ansible.builtin.import_playbook: configure.yml

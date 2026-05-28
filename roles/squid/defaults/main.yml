@@ -1,0 +1,42 @@
+---
+# Role-internal defaults. The real configuration lives in
+# inventory/group_vars/tag_Role_squid_proxy.yml — these are fallbacks.
+
+squid_package: squid
+squid_service: squid
+squid_user: squid
+squid_group: squid
+
+squid_listen_port: 3128
+squid_visible_hostname: "{{ inventory_hostname }}"
+
+squid_cache_dir: /var/spool/squid
+squid_cache_dir_size_mb: 1024
+squid_cache_mem_mb: 256
+squid_max_object_size_mb: 100
+
+squid_log_dir: /var/log/squid
+squid_access_log: "{{ squid_log_dir }}/access.log"
+squid_cache_log: "{{ squid_log_dir }}/cache.log"
+squid_log_rotate_days: 14
+
+squid_allowed_client_cidrs: []
+squid_allowed_dst_domains: []
+
+squid_safe_ports:
+  - "80"
+  - "21"
+  - "443"
+  - "70"
+  - "210"
+  - "1025-65535"
+  - "280"
+  - "488"
+  - "591"
+  - "777"
+
+squid_ssl_ports:
+  - "443"
+
+squid_forwarded_for: "delete"
+squid_via: "off"

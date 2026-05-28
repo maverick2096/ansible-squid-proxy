@@ -1,0 +1,11 @@
+---
+# aws_infra: create / maintain shared AWS resources (security groups + NLB).
+# Idempotent — safe to run repeatedly.
+
+- name: Include security-group tasks
+  ansible.builtin.import_tasks: security_groups.yml
+  tags: [aws_infra, security_groups]
+
+- name: Include NLB tasks
+  ansible.builtin.import_tasks: nlb.yml
+  tags: [aws_infra, nlb]

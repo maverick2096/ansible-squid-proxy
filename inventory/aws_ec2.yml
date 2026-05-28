@@ -1,0 +1,44 @@
+---
+# Dynamic AWS EC2 inventory.
+# Hosts are discovered by tag filters. Edit `regions` and `filters` to
+# match your environment. All variable values that drive provisioning
+# live in inventory/group_vars/, NOT here.
+
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - us-east-1
+
+# Discover only running instances tagged as part of this project.
+filters:
+  tag:Project: squid-proxy
+  instance-state-name:
+    - pending
+    - running
+
+# Group instances by tags for targeted plays (e.g. tag_Role_squid_proxy).
+keyed_groups:
+  - prefix: tag
+    key: tags.Role
+    separator: "_"
+  - prefix: az
+    key: placement.availability_zone
+    separator: "_"
+
+# Use the Name tag as the inventory hostname; fall back to instance id.
+hostnames:
+  - tag:Name
+  - instance-id
+
+# Connect over private IP (NLB is internal; controller is assumed in-VPC
+# or reachable via VPN / SSM port forwarding).
+compose:
+  ansible_host: private_ip_address
+  ec2_instance_id: instance_id
+  ec2_availability_zone: placement.availability_zone
+
+# Cache for speed in CI; refresh with `--flush-cache`.
+cache: true
+cache_plugin: jsonfile
+cache_timeout: 300
+cache_connection: .ansible_inventory_cache

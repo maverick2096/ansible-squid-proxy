@@ -1,0 +1,10 @@
+---
+- name: reload squid
+  ansible.builtin.service:
+    name: "{{ squid_service }}"
+    state: reloaded
+
+- name: restart squid
+  ansible.builtin.service:
+    name: "{{ squid_service }}"
+    state: restarted

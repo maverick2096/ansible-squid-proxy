@@ -1,0 +1,37 @@
+---
+# Apply the upstream CIS Benchmark role with our toggles, then layer our
+# squid-specific exceptions on top so the proxy port stays reachable.
+
+- name: Apply CIS Benchmark (ansible-lockdown.amzn2023_cis)
+  ansible.builtin.import_role:
+    name: ansible-lockdown.amzn2023_cis
+  vars:
+    # Map our friendly names to the upstream role's expected variable
+    # names. Names match the upstream defaults — kept explicit for clarity.
+    amzn2023cis_level_1_server: "{{ cis_level_1_server }}"
+    amzn2023cis_level_2_server: "{{ cis_level_2_server }}"
+    amzn2023cis_section1: "{{ cis_section_1 }}"
+    amzn2023cis_section2: "{{ cis_section_2 }}"
+    amzn2023cis_section3: "{{ cis_section_3 }}"
+    amzn2023cis_section4: "{{ cis_section_4 }}"
+    amzn2023cis_section5: "{{ cis_section_5 }}"
+    amzn2023cis_section6: "{{ cis_section_6 }}"
+    # Squid runs as a long-lived service; we don't need anything beyond
+    # what the role enables by default.
+
+- name: Ensure firewalld is running (CIS section 3 may have installed it)
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+  failed_when: false      # tolerate environments where firewalld isn't present
+
+- name: Open squid proxy port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ cis_firewall_allow_ports }}"
+  failed_when: false
+  when: cis_firewall_allow_ports | length > 0

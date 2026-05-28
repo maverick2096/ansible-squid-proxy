@@ -1,0 +1,23 @@
+*.retry
+*.pyc
+__pycache__/
+.DS_Store
+
+# Local-only inventory overrides
+inventory/host_vars/
+inventory/group_vars/vault.yml
+inventory/group_vars/*.local.yml
+
+# Ansible collection/role install dirs
+collections/
+.galaxy_cache/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Secrets
+*.pem
+*.key
+.vault_pass

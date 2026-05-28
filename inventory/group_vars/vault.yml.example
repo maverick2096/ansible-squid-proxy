@@ -1,0 +1,13 @@
+---
+# =============================================================================
+# Encrypt with:  ansible-vault encrypt inventory/group_vars/vault.yml
+# Reference vars from regular files via:  "{{ vault_<name> }}"
+# Copy this file to vault.yml and fill in real values.
+# =============================================================================
+
+# Example secrets — none required for the IP-allowlist-only deployment, but
+# placeholder for future auth modes (e.g. basic auth, SNMP, etc.).
+
+# vault_squid_basic_auth_users:
+#   - username: alice
+#     password_hash: "$apr1$..."

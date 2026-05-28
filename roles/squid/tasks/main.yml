@@ -1,0 +1,94 @@
+---
+- name: Install squid package
+  ansible.builtin.dnf:
+    name: "{{ squid_package }}"
+    state: present
+  tags: [squid, install]
+
+- name: Ensure log directory exists with correct perms
+  ansible.builtin.file:
+    path: "{{ squid_log_dir }}"
+    state: directory
+    owner: "{{ squid_user }}"
+    group: "{{ squid_group }}"
+    mode: "0750"
+  tags: [squid, config]
+
+- name: Ensure cache directory exists with correct perms
+  ansible.builtin.file:
+    path: "{{ squid_cache_dir }}"
+    state: directory
+    owner: "{{ squid_user }}"
+    group: "{{ squid_group }}"
+    mode: "0750"
+  when: squid_cache_dir_size_mb | int > 0
+  tags: [squid, config]
+
+- name: Render destination allowlist file
+  ansible.builtin.copy:
+    dest: /etc/squid/dstdomain.allowlist
+    owner: root
+    group: "{{ squid_group }}"
+    mode: "0640"
+    content: |
+      # Managed by Ansible — do not edit by hand.
+      {% for d in squid_allowed_dst_domains %}
+      {{ d }}
+      {% endfor %}
+  notify: reload squid
+  tags: [squid, config]
+
+- name: Render squid.conf
+  ansible.builtin.template:
+    src: squid.conf.j2
+    dest: /etc/squid/squid.conf
+    owner: root
+    group: "{{ squid_group }}"
+    mode: "0640"
+    validate: "squid -k parse -f %s"
+  notify: reload squid
+  tags: [squid, config]
+
+- name: Initialize squid cache dirs (first install only)
+  ansible.builtin.command: "squid -z -N -f /etc/squid/squid.conf"
+  args:
+    creates: "{{ squid_cache_dir }}/00"
+  when: squid_cache_dir_size_mb | int > 0
+  tags: [squid, config]
+
+- name: Configure logrotate for squid logs
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/squid
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible.
+      {{ squid_log_dir }}/*.log {
+          daily
+          rotate {{ squid_log_rotate_days }}
+          compress
+          delaycompress
+          missingok
+          notifempty
+          create 0640 {{ squid_user }} {{ squid_group }}
+          sharedscripts
+          postrotate
+              /usr/sbin/squid -k rotate || true
+          endscript
+      }
+  tags: [squid, config]
+
+- name: Enable and start squid
+  ansible.builtin.service:
+    name: "{{ squid_service }}"
+    state: started
+    enabled: true
+  tags: [squid, service]
+
+- name: Verify squid is listening
+  ansible.builtin.wait_for:
+    port: "{{ squid_listen_port }}"
+    host: 127.0.0.1
+    timeout: 30
+  tags: [squid, verify]

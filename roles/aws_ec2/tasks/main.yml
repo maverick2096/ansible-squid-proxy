@@ -1,0 +1,125 @@
+---
+# aws_ec2: launch one EC2 instance per entry in squid_instances.
+# Designed to run from localhost; iterates with loop so each instance
+# lands in the correct subnet/AZ.
+
+- name: Look up latest Amazon Linux 2023 AMI
+  amazon.aws.ec2_ami_info:
+    region: "{{ aws_region }}"
+    owners: "{{ ec2_ami_owner }}"
+    filters:
+      name: "{{ ec2_ami_filter_name }}"
+      architecture: "{{ ec2_ami_filter_arch }}"
+      state: available
+      virtualization-type: hvm
+      root-device-type: ebs
+  register: ami_info
+
+- name: Pick newest AMI by creation date
+  ansible.builtin.set_fact:
+    selected_ami_id: >-
+      {{ (ami_info.images | sort(attribute='creation_date') | last).image_id }}
+
+- name: Show chosen AMI
+  ansible.builtin.debug:
+    msg: "Using AMI {{ selected_ami_id }}"
+
+# Build a per-instance derived list combining the user-supplied
+# squid_instances entries with the matching subnet id from private_subnets.
+- name: Build resolved instance launch spec
+  ansible.builtin.set_fact:
+    resolved_squid_instances: >-
+      {{
+        squid_instances
+        | map('combine', {'subnet_id': ''})
+        | list
+      }}
+
+- name: Resolve subnet for each instance by AZ
+  ansible.builtin.set_fact:
+    resolved_squid_instances: >-
+      {{
+        resolved_squid_instances
+        | map('combine', {'subnet_id': (
+            private_subnets
+            | selectattr('az', 'equalto', item.az)
+            | map(attribute='id')
+            | first
+        )})
+        | list
+      }}
+  loop: "{{ resolved_squid_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Fail if any instance has no subnet match
+  ansible.builtin.assert:
+    that:
+      - item.subnet_id | length > 0
+    fail_msg: "No subnet in private_subnets matches AZ {{ item.az }} for {{ item.name }}"
+  loop: "{{ resolved_squid_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Launch EC2 instances
+  amazon.aws.ec2_instance:
+    name: "{{ item.name }}"
+    region: "{{ aws_region }}"
+    image_id: "{{ selected_ami_id }}"
+    instance_type: "{{ ec2_instance_type }}"
+    key_name: "{{ ec2_key_name | default(omit, true) }}"
+    vpc_subnet_id: "{{ item.subnet_id }}"
+    security_groups: ["{{ instance_sg_id }}"]
+    iam_instance_profile: "{{ ec2_iam_instance_profile | default(omit, true) }}"
+    network:
+      assign_public_ip: false
+    volumes:
+      - device_name: /dev/xvda
+        ebs:
+          volume_size: "{{ ec2_root_volume_size_gb }}"
+          volume_type: "{{ ec2_root_volume_type }}"
+          encrypted: "{{ ec2_root_volume_encrypted }}"
+          delete_on_termination: true
+    metadata_options:
+      http_tokens: required           # IMDSv2 only (CIS-aligned)
+      http_endpoint: enabled
+      http_put_response_hop_limit: 1
+    tags: >-
+      {{ common_tags | combine({
+        'Name': item.name,
+        'Role': 'squid-proxy',
+        'AZ': item.az
+      }) }}
+    state: running
+    wait: true
+    wait_timeout: 600
+  loop: "{{ resolved_squid_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: launched_instances
+
+- name: Wait for SSH on each new instance
+  ansible.builtin.wait_for:
+    host: "{{ item.instances[0].private_ip_address }}"
+    port: 22
+    delay: 10
+    timeout: 300
+  loop: "{{ launched_instances.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: ec2_key_name | length > 0   # only meaningful for SSH-based connection
+
+- name: Register instances with NLB target group
+  community.aws.elb_target:
+    target_group_arn: "{{ nlb_target_group_arn }}"
+    target_id: "{{ item.instances[0].instance_id }}"
+    target_port: "{{ squid_listen_port }}"
+    region: "{{ aws_region }}"
+    state: present
+  loop: "{{ launched_instances.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: aws_ec2_register_with_target_group | bool
+
+- name: Refresh dynamic inventory so new instances appear
+  ansible.builtin.meta: refresh_inventory

@@ -1,0 +1,67 @@
+#
+# squid.conf — managed by Ansible. DO NOT EDIT BY HAND.
+# Host: {{ inventory_hostname }}
+# Rendered: {{ ansible_date_time.iso8601 }}
+#
+
+# -------- ACLs ---------------------------------------------------------------
+{% for cidr in squid_allowed_client_cidrs %}
+acl allowed_clients src {{ cidr }}
+{% endfor %}
+
+acl SSL_ports port {{ squid_ssl_ports | join(' ') }}
+{% for p in squid_safe_ports %}
+acl Safe_ports port {{ p }}
+{% endfor %}
+
+acl CONNECT method CONNECT
+
+{% if squid_allowed_dst_domains | length > 0 %}
+acl allowed_dst dstdomain "/etc/squid/dstdomain.allowlist"
+{% endif %}
+
+# -------- Access rules — order matters --------------------------------------
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+
+# Allow only clients on the allowlist who target allowed destinations.
+{% if squid_allowed_dst_domains | length > 0 %}
+http_access allow allowed_clients allowed_dst
+{% else %}
+http_access allow allowed_clients
+{% endif %}
+
+# Default deny — anything not explicitly allowed.
+http_access deny all
+
+# -------- Listener -----------------------------------------------------------
+http_port {{ squid_listen_port }}
+
+# -------- Cache --------------------------------------------------------------
+{% if squid_cache_dir_size_mb | int > 0 %}
+cache_dir ufs {{ squid_cache_dir }} {{ squid_cache_dir_size_mb }} 16 256
+cache_mem {{ squid_cache_mem_mb }} MB
+maximum_object_size {{ squid_max_object_size_mb }} MB
+{% else %}
+cache deny all
+{% endif %}
+
+# -------- Logs ---------------------------------------------------------------
+access_log {{ squid_access_log }} squid
+cache_log  {{ squid_cache_log }}
+
+# -------- Privacy / headers --------------------------------------------------
+forwarded_for {{ squid_forwarded_for }}
+via {{ squid_via }}
+httpd_suppress_version_string on
+
+# -------- Identity / refresh --------------------------------------------------
+visible_hostname {{ squid_visible_hostname }}
+
+refresh_pattern ^ftp:           1440    20%     10080
+refresh_pattern ^gopher:        1440    0%      1440
+refresh_pattern -i (/cgi-bin/|\?) 0     0%      0
+refresh_pattern .               0       20%     4320
+
+# -------- DNS ----------------------------------------------------------------
+dns_v4_first on

@@ -1,0 +1,29 @@
+---
+# provision.yml — create AWS resources (SGs, NLB, target group, EC2).
+# Runs entirely from localhost using the amazon.aws / community.aws collections.
+#
+# Usage:  ansible-playbook playbooks/provision.yml
+
+- name: Provision AWS resources for squid proxy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tasks:
+    - name: Sanity-check required variables
+      ansible.builtin.assert:
+        that:
+          - vpc_id is defined and vpc_id != "vpc-REPLACE_ME"
+          - private_subnets | length >= 2
+          - allowed_client_cidrs | length > 0
+        fail_msg: >-
+          Set vpc_id, private_subnets (>=2), and allowed_client_cidrs in
+          inventory/group_vars/all.yml before provisioning.
+
+  roles:
+    - role: aws_infra
+      tags: [provision, infra]
+    - role: aws_ec2
+      tags: [provision, ec2]

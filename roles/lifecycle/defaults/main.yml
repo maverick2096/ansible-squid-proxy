@@ -1,0 +1,8 @@
+---
+# lifecycle: shared helpers used by replace.yml / patch.yml.
+# Driving variables (drain/health waits) come from group_vars; these are
+# fallbacks used when a play imports the role without overrides.
+
+rolling_drain_wait_sec: 90
+rolling_health_wait_sec: 600
+rolling_health_check_interval_sec: 15
