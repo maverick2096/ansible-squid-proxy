@@ -31,12 +31,12 @@ admin_ssh_cidrs: []
 
 # ---------- Project identity / tagging ---------------------------------------
 project_name: squid-proxy
-environment: prod
+deploy_env: prod         # NOTE: do NOT rename to `environment` — that name is reserved by Ansible
 owner: platform-team
 
 common_tags:
   Project: "{{ project_name }}"
-  Environment: "{{ environment }}"
+  Environment: "{{ deploy_env }}"
   Owner: "{{ owner }}"
   ManagedBy: ansible
 

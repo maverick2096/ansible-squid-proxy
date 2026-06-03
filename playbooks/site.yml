@@ -1,12 +1,162 @@
 ---
-# site.yml — end-to-end provision + configure of the squid proxy cluster.
-# Idempotent: safe to re-run; will create missing resources and update
-# config on existing instances.
+# =============================================================================
+# site.yml — MASTER PLAYBOOK
 #
-# Usage:  ansible-playbook playbooks/site.yml
+# Runs the full stack end-to-end, role by role, in the correct order:
+#
+#   STAGE 1  localhost  aws_infra        Security groups + NLB + target group
+#   STAGE 2  localhost  aws_ec2          Launch EC2 instances + register targets
+#   STAGE 3  proxies    cis_hardening    Apply CIS Benchmark L1 hardening
+#   STAGE 4  proxies    squid            Install + configure squid
+#   STAGE 5  localhost  (verify)         Print NLB DNS + confirm targets healthy
+#
+# Each STAGE is one play. Stages run sequentially — STAGE N waits for
+# STAGE N-1 to finish on every host. Hosts within a configuration stage
+# (3 + 4) run in parallel by default; override with `--forks` or
+# `serial:` if you want strictly one-at-a-time.
+#
+# Usage:
+#   ansible-playbook playbooks/site.yml                          # full run
+#   ansible-playbook playbooks/site.yml --tags infra             # STAGE 1 only
+#   ansible-playbook playbooks/site.yml --tags ec2               # STAGE 2 only
+#   ansible-playbook playbooks/site.yml --tags cis               # STAGE 3 only
+#   ansible-playbook playbooks/site.yml --tags squid             # STAGE 4 only
+#   ansible-playbook playbooks/site.yml --skip-tags cis          # skip hardening
+#
+# For day-2 ops use the dedicated playbooks instead:
+#   playbooks/patch.yml      — rolling in-place OS patching
+#   playbooks/replace.yml    — rolling immutable AMI replacement
+# =============================================================================
 
-- name: Import provisioning play (AWS infra + EC2)
-  ansible.builtin.import_playbook: provision.yml
 
-- name: Import configuration play (CIS + squid)
-  ansible.builtin.import_playbook: configure.yml
+# ─── STAGE 1: AWS infrastructure (security groups + NLB) ────────────────────
+- name: "STAGE 1 — Provision AWS infrastructure (security groups + NLB)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tags: [stage1, infra]
+  tasks:
+    - name: Sanity-check required variables before doing anything
+      ansible.builtin.assert:
+        that:
+          - vpc_id is defined and vpc_id != "vpc-REPLACE_ME"
+          - private_subnets | length >= 2
+          - allowed_client_cidrs | length > 0
+        fail_msg: >-
+          Set vpc_id, private_subnets (>=2), and allowed_client_cidrs in
+          inventory/group_vars/all.yml before running site.yml.
+
+    - name: Apply aws_infra role (security groups + NLB + target group)
+      ansible.builtin.import_role:
+        name: aws_infra
+
+
+# ─── STAGE 2: Launch EC2 instances ──────────────────────────────────────────
+- name: "STAGE 2 — Launch EC2 instances and register them with the NLB"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tags: [stage2, ec2]
+  tasks:
+    - name: Apply aws_ec2 role (AMI lookup + launch + target group register)
+      ansible.builtin.import_role:
+        name: aws_ec2
+
+
+# ─── STAGE 3: Apply CIS hardening to every proxy instance ───────────────────
+- name: "STAGE 3 — Apply CIS Benchmark hardening to all squid proxies"
+  hosts: tag_Role_squid_proxy
+  gather_facts: true
+  any_errors_fatal: false
+  tags: [stage3, cis, hardening]
+  pre_tasks:
+    - name: Refresh package metadata
+      ansible.builtin.dnf:
+        update_cache: true
+      changed_when: false
+  tasks:
+    - name: Apply cis_hardening role
+      ansible.builtin.import_role:
+        name: cis_hardening
+
+
+# ─── STAGE 4: Install and configure squid on every proxy instance ───────────
+- name: "STAGE 4 — Install and configure squid on all proxies"
+  hosts: tag_Role_squid_proxy
+  gather_facts: true
+  any_errors_fatal: false
+  tags: [stage4, squid]
+  tasks:
+    - name: Apply squid role
+      ansible.builtin.import_role:
+        name: squid
+
+
+# ─── STAGE 5: Verify and report ─────────────────────────────────────────────
+- name: "STAGE 5 — Verify NLB targets are healthy and print proxy endpoint"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../inventory/group_vars/all.yml
+    - ../inventory/group_vars/tag_Role_squid_proxy.yml
+  tags: [stage5, verify]
+  tasks:
+    - name: Look up NLB
+      community.aws.elb_network_lb_info:
+        names: ["{{ nlb_name }}"]
+        region: "{{ aws_region }}"
+      register: nlb_info
+
+    - name: Look up target group
+      community.aws.elb_target_group_info:
+        names: ["{{ nlb_target_group_name }}"]
+        region: "{{ aws_region }}"
+      register: tg_info
+
+    - name: Poll target health until all targets are healthy
+      community.aws.elb_target_info:
+        target_group_arn: "{{ tg_info.target_groups[0].target_group_arn }}"
+        region: "{{ aws_region }}"
+      register: tg_state
+      vars:
+        descriptions: >-
+          {{
+            (tg_state.instance_target_groups
+             | default([{'target_health_descriptions': []}]))[0]
+            .target_health_descriptions
+          }}
+      until:
+        - descriptions | length > 0
+        - (descriptions | rejectattr('target_health.state', 'equalto', 'healthy') | list) | length == 0
+      retries: "{{ (rolling_health_wait_sec | int // rolling_health_check_interval_sec | int) | int }}"
+      delay: "{{ rolling_health_check_interval_sec }}"
+      failed_when: false
+
+    - name: Final report
+      ansible.builtin.debug:
+        msg: |
+          ===============================================================
+          Squid HA cluster is up.
+
+          Proxy endpoint (virtual IP):
+            http://{{ nlb_info.load_balancers[0].dns_name }}:{{ squid_listen_port }}
+
+          Client config:
+            export HTTP_PROXY=http://{{ nlb_info.load_balancers[0].dns_name }}:{{ squid_listen_port }}
+            export HTTPS_PROXY=http://{{ nlb_info.load_balancers[0].dns_name }}:{{ squid_listen_port }}
+
+          Allowed client CIDRs:  {{ allowed_client_cidrs | join(', ') }}
+          Targets:
+          {% for d in (tg_state.instance_target_groups[0].target_health_descriptions
+                      if tg_state.instance_target_groups | default([]) | length > 0
+                      else []) %}
+            - {{ d.target.id }}  state={{ d.target_health.state }}
+          {% endfor %}
+          ===============================================================
